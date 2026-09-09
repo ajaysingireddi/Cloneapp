@@ -95,8 +95,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
-            excludes += "/META-INF/BCKEY.DSA"
-            excludes += "/META-INF/BCKEY.SF"
+            excludes += "/META-INF/*.DSA"
+            excludes += "/META-INF/*.SF"
+            excludes += "/META-INF/*.RSA"
+            excludes += "META-INF/versions/**"
+            excludes += "META-INF/OSGI-INF/**"
+            pickFirsts += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            pickFirsts += "META-INF/versions/**"
         }
     }
 }
