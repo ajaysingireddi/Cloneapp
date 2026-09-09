@@ -1,4 +1,4 @@
-name: Setup and Build APK
+name: Build Android APK
 
 on:
   push:
@@ -9,15 +9,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Generate Project Code
+      - name: Generate All Source Files
         run: |
           chmod +x setup.sh
           ./setup.sh
 
-      - name: Setup Java 17
+      - name: Set Up Java 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
