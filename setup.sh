@@ -95,6 +95,8 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
+            excludes += "/META-INF/BCKEY.DSA"
+            excludes += "/META-INF/BCKEY.SF"
         }
     }
 }
@@ -203,20 +205,22 @@ cat << 'EOF' > app/src/main/res/drawable/ic_cloner_logo.xml
 </vector>
 EOF
 
-# ----------------- 1. DEX Bytecode Patcher (Fixed Type Resolution) -----------------
+# ----------------- 1. DEX Bytecode Patcher -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/DexDeveloperModePatcher.kt
 package com.clone.app.patcher
 
 import org.jf.dexlib2.Opcode
 import org.jf.dexlib2.dexbacked.DexBackedDexFile
-import org.jf.dexlib2.iface.ClassDef
 import org.jf.dexlib2.iface.Method
 import org.jf.dexlib2.iface.instruction.ReferenceInstruction
 import org.jf.dexlib2.iface.reference.MethodReference
-import org.jf.dexlib2.immutable.ImmutableClassDef
 import org.jf.dexlib2.immutable.ImmutableMethod
 import org.jf.dexlib2.immutable.ImmutableMethodImplementation
 import org.jf.dexlib2.immutable.instruction.ImmutableInstruction11n
+import org.jf.dexlib2.rewriter.DexRewriter
+import org.jf.dexlib2.rewriter.Rewriter
+import org.jf.dexlib2.rewriter.RewriterModule
+import org.jf.dexlib2.writer.io.FileDataStore
 import org.jf.dexlib2.writer.pool.DexPool
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -225,74 +229,55 @@ object DexDeveloperModePatcher {
 
     fun patchDexBytes(dexBytes: ByteArray): ByteArray {
         val dexFile = DexBackedDexFile.fromInputStream(null, ByteArrayInputStream(dexBytes))
-        val modifiedClasses = mutableListOf<ClassDef>()
 
-        for (classDef in dexFile.classes) {
-            val directMethods = classDef.directMethods.map { patchMethod(it) }
-            val virtualMethods = classDef.virtualMethods.map { patchMethod(it) }
+        val rewriter = DexRewriter(object : RewriterModule() {
+            override fun getMethodRewriter(rewriters: org.jf.dexlib2.rewriter.Rewriters): Rewriter<Method> {
+                return Rewriter { method ->
+                    val implementation = method.implementation ?: return@Rewriter method
 
-            modifiedClasses.add(
-                ImmutableClassDef(
-                    classDef.type,
-                    classDef.accessFlags,
-                    classDef.superclass,
-                    classDef.interfaces,
-                    classDef.sourceFile,
-                    classDef.annotations,
-                    classDef.fields,
-                    directMethods,
-                    virtualMethods
-                )
-            )
-        }
+                    var modified = false
+                    val newInstructions = implementation.instructions.map { instruction ->
+                        if (instruction.opcode == Opcode.INVOKE_STATIC) {
+                            val ref = (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                            if (ref != null && isSecurityCheck(ref)) {
+                                modified = true
+                                return@map ImmutableInstruction11n(Opcode.CONST_4, 0, 0)
+                            }
+                        }
+                        instruction
+                    }
 
-        val dexPool = DexPool(dexFile.opcodes)
-        for (clazz in modifiedClasses) {
-            dexPool.internClass(clazz)
-        }
+                    if (!modified) {
+                        return@Rewriter method
+                    }
 
+                    val newImpl = ImmutableMethodImplementation(
+                        implementation.registerCount,
+                        newInstructions,
+                        implementation.tryBlocks,
+                        implementation.debugItems
+                    )
+
+                    ImmutableMethod(
+                        method.definingClass,
+                        method.name,
+                        method.parameters,
+                        method.returnType,
+                        method.accessFlags,
+                        method.annotations,
+                        method.hiddenApiRestrictions,
+                        newImpl
+                    )
+                }
+            }
+        })
+
+        val rewrittenDex = rewriter.dexFileRewriter.rewrite(dexFile)
         val temp = File.createTempFile("dex_out", ".dex")
-        dexPool.writeTo(temp.absolutePath)
+        DexPool.writeTo(FileDataStore(temp), rewrittenDex)
         val result = temp.readBytes()
         temp.delete()
         return result
-    }
-
-    private fun patchMethod(method: Method): Method {
-        val implementation = method.implementation ?: return method
-
-        var modified = false
-        val newInstructions = implementation.instructions.map { instruction ->
-            if (instruction.opcode == Opcode.INVOKE_STATIC) {
-                val ref = (instruction as? ReferenceInstruction)?.reference as? MethodReference
-                if (ref != null && isSecurityCheck(ref)) {
-                    modified = true
-                    // Replace method call with const/4 v0, 0x0
-                    return@map ImmutableInstruction11n(Opcode.CONST_4, 0, 0)
-                }
-            }
-            instruction
-        }
-
-        if (!modified) return method
-
-        val newImpl = ImmutableMethodImplementation(
-            implementation.registerCount,
-            newInstructions,
-            implementation.tryBlocks,
-            implementation.debugItems
-        )
-
-        return ImmutableMethod(
-            method.definingClass,
-            method.name,
-            method.parameters,
-            method.returnType,
-            method.accessFlags,
-            method.annotations,
-            method.hiddenApiRestrictions,
-            newImpl
-        )
     }
 
     private fun isSecurityCheck(ref: MethodReference): Boolean {
@@ -352,7 +337,7 @@ object ManifestPackagePatcher {
 }
 EOF
 
-# ----------------- 3. APK Signer Engine (V1 + V2) -----------------
+# ----------------- 3. APK Signer Engine -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/ApkSignerEngine.kt
 package com.clone.app.patcher
 
@@ -441,7 +426,7 @@ object ApkClonerPipeline {
         onProgress("1/5 Extracting target APK...")
         val sourceApk = File(sourceApkPath)
         val unsignedApk = File(context.cacheDir, "temp_unsigned.apk")
-        val signedApk = File(context.cacheDir, "${targetPackageName}_cloned.apk")
+        val signedApk = File(context.cacheDir, targetPackageName + "_cloned.apk")
 
         if (unsignedApk.exists()) unsignedApk.delete()
         if (signedApk.exists()) signedApk.delete()
@@ -470,7 +455,7 @@ object ApkClonerPipeline {
                 val patchedManifest = ManifestPackagePatcher.rewriteManifest(
                     rawBytes,
                     targetPackageName,
-                    "${targetPackageName}.cloned"
+                    targetPackageName + ".cloned"
                 )
                 zipOut.write(patchedManifest)
             } else {
@@ -519,6 +504,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.clone.app.patcher.ApkClonerPipeline
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -545,8 +531,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun lifecycleScopeLaunch(appTarget: AppTarget, updateProgress: (String) -> Unit) {
-        val scope = (this as ComponentActivity)
-        kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
+        CoroutineScope(Dispatchers.Main).launch {
             try {
                 val outputApk = ApkClonerPipeline.cloneApp(
                     this@MainActivity,
@@ -556,14 +541,15 @@ class MainActivity : ComponentActivity() {
                 )
                 installPatchedApk(outputApk)
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Patching failed: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Patching failed: " + e.message, Toast.LENGTH_LONG).show()
                 updateProgress("Failed")
             }
         }
     }
 
     private fun installPatchedApk(apkFile: File) {
-        val uri: Uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", apkFile)
+        val authority = packageName + ".fileprovider"
+        val uri: Uri = FileProvider.getUriForFile(this, authority, apkFile)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -601,4 +587,5 @@ fun ClonerScreen(onCloneApp: (AppTarget, (String) -> Unit) -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Clone Stu
+        Text("Clone Studio", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    
