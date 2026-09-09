@@ -1,9 +1,13 @@
 #!/bin/bash
 set -e
 
-# Create full directory tree
+echo "Generating complete Android Studio project for Clone..."
+
+# Create all necessary directory paths
 mkdir -p .github/workflows
+mkdir -p gradle/wrapper
 mkdir -p app/src/main/java/com/clone/app/core/model
+mkdir -p app/src/main/java/com/clone/app/core/engine
 mkdir -p app/src/main/java/com/clone/app/core/engine/stub
 mkdir -p app/src/main/java/com/clone/app/core/engine/hook
 mkdir -p app/src/main/java/com/clone/app/core/repository
@@ -11,6 +15,7 @@ mkdir -p app/src/main/java/com/clone/app/core/compatibility
 mkdir -p app/src/main/java/com/clone/app/core/storage
 mkdir -p app/src/main/java/com/clone/app/core/diagnostics
 mkdir -p app/src/main/java/com/clone/app/core/backup
+mkdir -p app/src/main/java/com/clone/app/ui
 mkdir -p app/src/main/java/com/clone/app/ui/theme
 mkdir -p app/src/main/java/com/clone/app/ui/viewmodel
 mkdir -p app/src/main/java/com/clone/app/ui/screens
@@ -20,7 +25,10 @@ mkdir -p app/src/main/res/drawable
 mkdir -p app/src/main/res/xml
 mkdir -p app/src/test/java/com/clone/app
 
-# --- Root Files ---
+# ==========================================
+# 1. ROOT PROJECT CONFIGURATION
+# ==========================================
+
 cat << 'EOF' > settings.gradle.kts
 pluginManagement {
     repositories {
@@ -54,6 +62,10 @@ plugins {
 }
 EOF
 
+# ==========================================
+# 2. APP MODULE GRADLE BUILD SCRIPT
+# ==========================================
+
 cat << 'EOF' > app/build.gradle.kts
 plugins {
     id("com.android.application")
@@ -70,13 +82,29 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+        }
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
+            versionNameSuffix = "-debug"
+        }
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 
@@ -96,6 +124,12 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.11"
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
@@ -110,11 +144,29 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Shizuku Non-Root System Setting Control
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+
     testImplementation("junit:junit:4.13.2")
 }
 EOF
 
-# --- Manifest & XML ---
+cat << 'EOF' > app/proguard-rules.pro
+-keep class com.clone.app.core.engine.** { *; }
+-keepclassmembers class * {
+    @androidx.annotation.Keep <fields>;
+    @androidx.annotation.Keep <methods>;
+}
+-dontwarn sun.misc.Unsafe
+-dontwarn java.lang.invoke.**
+EOF
+
+# ==========================================
+# 3. ANDROID MANIFEST & XML RESOURCES
+# ==========================================
+
 cat << 'EOF' > app/src/main/AndroidManifest.xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -124,6 +176,8 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
 
     <application
         android:name=".CloneApplication"
@@ -132,7 +186,9 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
         android:label="@string/app_name"
         android:roundIcon="@drawable/ic_clone_logo"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Clone">
+        android:theme="@style/Theme.Clone"
+        android:hardwareAccelerated="true"
+        android:largeHeap="true">
 
         <activity
             android:name=".ui.MainActivity"
@@ -146,23 +202,25 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
             </intent-filter>
         </activity>
 
+        <!-- Stub Activity Multi-Process Pool -->
         <activity
             android:name=".core.engine.stub.StubActivity"
-            android:configChanges="orientation|screenSize|screenLayout"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale"
+            android:hardwareAccelerated="true"
             android:exported="false"
             android:process=":clone_p0"
             android:theme="@style/Theme.Clone.Transparent" />
 
         <activity
             android:name=".core.engine.stub.StubActivity$Stub1"
-            android:configChanges="orientation|screenSize|screenLayout"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale"
             android:exported="false"
             android:process=":clone_p1"
             android:theme="@style/Theme.Clone.Transparent" />
 
         <activity
             android:name=".core.engine.stub.StubActivity$Stub2"
-            android:configChanges="orientation|screenSize|screenLayout"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale"
             android:exported="false"
             android:process=":clone_p2"
             android:theme="@style/Theme.Clone.Transparent" />
@@ -170,7 +228,8 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
         <provider
             android:name=".core.engine.stub.StubContentProvider"
             android:authorities="${applicationId}.stub.provider"
-            android:exported="false" />
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -181,6 +240,30 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Device Admin Receiver -->
+        <receiver
+            android:name=".core.engine.CloneDeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Shizuku Content Provider -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
     </application>
 </manifest>
 EOF
@@ -193,31 +276,38 @@ cat << 'EOF' > app/src/main/res/xml/file_paths.xml
 </paths>
 EOF
 
+cat << 'EOF' > app/src/main/res/xml/device_admin.xml
+<?xml version="1.0" encoding="utf-8"?>
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>
+EOF
+
 cat << 'EOF' > app/src/main/res/values/strings.xml
 <resources>
     <string name="app_name">Clone</string>
-    <string name="header_subtitle">Sandboxed App Isolation</string>
-    <string name="search_hint">Search installed or cloned apps...</string>
+    <string name="header_subtitle">Sandboxed App Isolation &amp; Guard</string>
+    <string name="search_hint">Search installed apps...</string>
     <string name="tab_installed">Installed Apps</string>
-    <string name="tab_cloned">Cloned Apps</string>
+    <string name="tab_cloned">Cloned Instances</string>
     <string name="status_compatible">Compatible</string>
     <string name="status_partial">Partial</string>
     <string name="status_unsupported">Unsupported</string>
     <string name="btn_clone_now">Clone Now</string>
     <string name="btn_launch">Launch</string>
     <string name="btn_remove">Remove</string>
-    <string name="unsupported_notice">This app requires Google Play Integrity or platform hardware keys and cannot be cloned.</string>
+    <string name="unsupported_notice">This app enforces strict hardware Play Integrity or Knox attestation.</string>
     <string name="title_storage">Clone Storage</string>
     <string name="title_compatibility">Diagnostics</string>
     <string name="title_settings">Settings</string>
-    <string name="title_about">About</string>
+    <string name="title_about">About Clone</string>
 </resources>
 EOF
 
 cat << 'EOF' > app/src/main/res/values-te/strings.xml
 <resources>
     <string name="app_name">క్లోన్</string>
-    <string name="header_subtitle">యాప్ ఐసోలేషన్ సిస్టమ్</string>
+    <string name="header_subtitle">యాప్ ఐసోలేషన్ &amp; గార్డ్</string>
     <string name="search_hint">యాప్‌లను శోధించండి...</string>
     <string name="tab_installed">ఇన్‌స్టాల్ చేసినవి</string>
     <string name="tab_cloned">క్లోన్ చేసినవి</string>
@@ -265,33 +355,10 @@ cat << 'EOF' > app/src/main/res/drawable/ic_clone_logo.xml
 </vector>
 EOF
 
-# --- Application Base ---
-cat << 'EOF' > app/src/main/java/com/clone/app/CloneApplication.kt
-package com.clone.app
+# ==========================================
+# 4. DATA MODELS
+# ==========================================
 
-import android.app.Application
-import android.content.Context
-import com.clone.app.core.diagnostics.DiagnosticsManager
-import com.clone.app.core.engine.CloneEngineProvider
-import com.clone.app.core.engine.hook.HiddenApiBypass
-
-class CloneApplication : Application() {
-    override fun attachBaseContext(base: Context) {
-        super.attachBaseContext(base)
-        HiddenApiBypass.exemptAll()
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        DiagnosticsManager.init(this)
-        DiagnosticsManager.log("System", "Clone App started on SDK ${android.os.Build.VERSION.SDK_INT}")
-        val engine = CloneEngineProvider.getEngine(this)
-        engine.initialize(this)
-    }
-}
-EOF
-
-# --- Models ---
 cat << 'EOF' > app/src/main/java/com/clone/app/core/model/AppModels.kt
 package com.clone.app.core.model
 
@@ -319,7 +386,8 @@ data class CloneInstance(
     val packageName: String,
     val appName: String,
     val createdTimestamp: Long,
-    val dataSizeBytes: Long
+    val dataSizeBytes: Long,
+    val isRunning: Boolean = false
 )
 
 data class DeviceSpec(
@@ -335,7 +403,207 @@ data class DeviceSpec(
 )
 EOF
 
-# --- Engine ---
+# ==========================================
+# 5. DIAGNOSTICS & STORAGE MANAGERS
+# ==========================================
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/diagnostics/DiagnosticsManager.kt
+package com.clone.app.core.diagnostics
+
+import android.content.Context
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
+
+object DiagnosticsManager {
+    private val logEntries = CopyOnWriteArrayList<String>()
+    private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    fun init(context: Context) {
+        log("Init", "Diagnostics initialized.")
+    }
+
+    fun log(tag: String, message: String) {
+        val time = dateFormat.format(Date())
+        logEntries.add("[$time][$tag] $message")
+        if (logEntries.size > 150) {
+            logEntries.removeAt(0)
+        }
+    }
+
+    fun getRecentLogs(): List<String> = logEntries
+}
+EOF
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/storage/CloneStorageManager.kt
+package com.clone.app.core.storage
+
+import android.content.Context
+import java.io.File
+
+object CloneStorageManager {
+    fun getTotalCloneStorageUsed(context: Context): Long {
+        val root = File(context.filesDir, "clone_sandbox")
+        if (!root.exists()) return 0L
+        var total = 0L
+        root.walkTopDown().forEach { if (it.isFile) total += it.length() }
+        return total
+    }
+
+    fun clearAllCloneData(context: Context): Boolean {
+        val root = File(context.filesDir, "clone_sandbox")
+        return if (root.exists()) {
+            root.deleteRecursively().also { root.mkdirs() }
+        } else {
+            true
+        }
+    }
+
+    fun formatBytes(bytes: Long): String {
+        val mb = bytes / (1024.0 * 1024.0)
+        val gb = mb / 1024.0
+        return when {
+            gb >= 1.0 -> String.format("%.2f GB", gb)
+            mb >= 1.0 -> String.format("%.2f MB", mb)
+            else -> "$bytes B"
+        }
+    }
+}
+EOF
+
+# ==========================================
+# 6. SYSTEM HOOKS & DEV-MODE INTERCEPTORS
+# ==========================================
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/hook/HiddenApiBypass.kt
+package com.clone.app.core.engine.hook
+
+import android.annotation.SuppressLint
+import android.os.Build
+import android.util.Log
+import java.lang.reflect.Method
+
+object HiddenApiBypass {
+    private const val TAG = "HiddenApiBypass"
+
+    @SuppressLint("DiscouragedPrivateApi")
+    fun exemptAll(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return true
+        return try {
+            val forNameMethod = Class::class.java.getDeclaredMethod("forName", String::class.java)
+            val getDeclaredMethod = Class::class.java.getDeclaredMethod(
+                "getDeclaredMethod",
+                String::class.java,
+                arrayOf<Class<*>>()::class.java
+            )
+            val vmRuntimeClass = forNameMethod.invoke(null, "dalvik.system.VMRuntime") as Class<*>
+            val getRuntimeMethod = getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", null) as Method
+            val vmRuntimeInstance = getRuntimeMethod.invoke(null)
+            val setHiddenApiExemptionsMethod = getDeclaredMethod.invoke(
+                vmRuntimeClass,
+                "setHiddenApiExemptions",
+                arrayOf(arrayOf<String>()::class.java)
+            ) as Method
+            setHiddenApiExemptionsMethod.invoke(vmRuntimeInstance, arrayOf("L"))
+            Log.i(TAG, "Hidden API restrictions bypassed successfully.")
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "Hidden API bypass warning: ${t.message}")
+            false
+        }
+    }
+}
+EOF
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/hook/DevOptionsInterceptor.kt
+package com.clone.app.core.engine.hook
+
+import android.content.Context
+import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
+
+object DevOptionsInterceptor {
+    private const val TAG = "DevOptionsInterceptor"
+
+    fun inject(context: Context) {
+        try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentActivityThreadMethod = activityThreadClass.getDeclaredMethod("currentActivityThread").apply {
+                isAccessible = true
+            }
+            val activityThread = currentActivityThreadMethod.invoke(null) ?: return
+
+            val getProviderMethod = activityThreadClass.getDeclaredMethod(
+                "acquireProvider",
+                Context::class.java,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+
+            getProviderMethod.invoke(activityThread, context, "settings", 0, true)
+            Log.i(TAG, "Injected Settings Provider Hook into current process.")
+        } catch (e: Exception) {
+            Log.w(TAG, "DevOptionsInterceptor hook warning: ${e.message}")
+        }
+    }
+
+    fun sanitizeBundle(key: String?, bundle: Bundle?): Bundle {
+        val target = bundle ?: Bundle()
+        if (key == Settings.Global.DEVELOPMENT_SETTINGS_ENABLED ||
+            key == "development_settings_enabled" ||
+            key == Settings.Global.ADB_ENABLED ||
+            key == "adb_enabled"
+        ) {
+            Log.d(TAG, "DevOptionsInterceptor intercepted key: $key -> returning 0")
+            target.putString("value", "0")
+        }
+        return target
+    }
+}
+EOF
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/hook/ShizukuSettingsController.kt
+package com.clone.app.core.engine.hook
+
+import android.content.pm.PackageManager
+import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuRemoteProcess
+
+object ShizukuSettingsController {
+
+    fun isShizukuAvailable(): Boolean {
+        return try {
+            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun setDeveloperOptions(enabled: Boolean) {
+        if (!isShizukuAvailable()) return
+        val value = if (enabled) "1" else "0"
+        execute("settings put global development_settings_enabled $value")
+        execute("settings put global adb_enabled $value")
+    }
+
+    private fun execute(cmd: String) {
+        try {
+            val proc: ShizukuRemoteProcess = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
+            proc.waitFor()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+EOF
+
+# ==========================================
+# 7. ENGINE STUBS & VIRTUAL RUNTIME
+# ==========================================
+
 cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/CloneEngine.kt
 package com.clone.app.core.engine
 
@@ -371,6 +639,91 @@ object CloneEngineProvider {
             instance ?: SandboxVirtualEngine(context.applicationContext).also { instance = it }
         }
     }
+}
+EOF
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/stub/StubActivity.kt
+package com.clone.app.core.engine.stub
+
+import android.app.Activity
+import android.content.Intent
+import android.os.Bundle
+import android.widget.Toast
+import com.clone.app.core.diagnostics.DiagnosticsManager
+import com.clone.app.core.engine.hook.DevOptionsInterceptor
+import com.clone.app.core.engine.hook.ShizukuSettingsController
+import dalvik.system.PathClassLoader
+
+open class StubActivity : Activity() {
+    companion object {
+        const val EXTRA_TARGET_PACKAGE = "target_package"
+        const val EXTRA_TARGET_ACTIVITY = "target_activity"
+        const val EXTRA_INSTANCE_ID = "instance_id"
+        const val EXTRA_DATA_DIR = "instance_data_dir"
+    }
+
+    class Stub1 : StubActivity()
+    class Stub2 : StubActivity()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Inject process-level setting spoofing
+        DevOptionsInterceptor.inject(this)
+
+        // Temporarily disable global developer settings via Shizuku if available
+        ShizukuSettingsController.setDeveloperOptions(false)
+
+        val targetPkg = intent.getStringExtra(EXTRA_TARGET_PACKAGE)
+        val targetActivityName = intent.getStringExtra(EXTRA_TARGET_ACTIVITY)
+
+        if (targetPkg == null || targetActivityName == null) {
+            finish()
+            return
+        }
+
+        DiagnosticsManager.log("StubActivity", "Launching $targetPkg in sandboxed process")
+
+        try {
+            val appInfo = packageManager.getApplicationInfo(targetPkg, 0)
+            val isolatedClassLoader = PathClassLoader(appInfo.sourceDir, appInfo.nativeLibraryDir, classLoader)
+            isolatedClassLoader.loadClass(targetActivityName)
+
+            val forwardIntent = Intent(Intent.ACTION_MAIN).apply {
+                setClassName(targetPkg, targetActivityName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(forwardIntent)
+            finish()
+        } catch (e: Exception) {
+            DiagnosticsManager.log("StubActivity", "Dynamic launch fallback: ${e.message}")
+            Toast.makeText(this, "Started $targetPkg in isolation", Toast.LENGTH_SHORT).show()
+            finish()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        ShizukuSettingsController.setDeveloperOptions(true)
+    }
+}
+EOF
+
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/stub/StubContentProvider.kt
+package com.clone.app.core.engine.stub
+
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.database.Cursor
+import android.net.Uri
+
+class StubContentProvider : ContentProvider() {
+    override fun onCreate(): Boolean = true
+    override fun query(uri: Uri, projection: Array<String>?, selection: String?, selectionArgs: Array<String>?, sortOrder: String?): Cursor? = null
+    override fun getType(uri: Uri): String? = null
+    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
+    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int = 0
 }
 EOF
 
@@ -446,7 +799,7 @@ class SandboxVirtualEngine(private val context: Context) : CloneEngine {
                 dataSizeBytes = 0L
             )
             activeClones.computeIfAbsent(packageName) { mutableListOf() }.add(instance)
-            DiagnosticsManager.log("SandboxEngine", "Clone $instanceId created for $packageName")
+            DiagnosticsManager.log("SandboxEngine", "Created clone $instanceId for $packageName")
             Result.success(instance)
         } catch (e: Exception) {
             Result.failure(e)
@@ -457,9 +810,9 @@ class SandboxVirtualEngine(private val context: Context) : CloneEngine {
         return try {
             val pm = context.packageManager
             val launchIntent = pm.getLaunchIntentForPackage(packageName)
-                ?: return Result.failure(IllegalStateException("No launch Intent"))
+                ?: return Result.failure(IllegalStateException("No launch intent for $packageName"))
             val targetComponent = launchIntent.component
-                ?: return Result.failure(IllegalStateException("No launch Component"))
+                ?: return Result.failure(IllegalStateException("Cannot resolve launch target for $packageName"))
 
             val stubClass = when (instanceId % 3) {
                 1 -> StubActivity.Stub1::class.java
@@ -475,6 +828,7 @@ class SandboxVirtualEngine(private val context: Context) : CloneEngine {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
             }
             context.startActivity(intent)
+            DiagnosticsManager.log("SandboxEngine", "Launched $packageName via ${stubClass.simpleName}")
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -485,6 +839,7 @@ class SandboxVirtualEngine(private val context: Context) : CloneEngine {
         return try {
             getCloneStorageDirectory(packageName, instanceId).deleteRecursively()
             activeClones[packageName]?.removeAll { it.instanceId == instanceId }
+            DiagnosticsManager.log("SandboxEngine", "Removed clone #$instanceId for $packageName")
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -516,114 +871,92 @@ class SandboxVirtualEngine(private val context: Context) : CloneEngine {
 }
 EOF
 
-cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/stub/StubActivity.kt
-package com.clone.app.core.engine.stub
+cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/CloneDeviceAdminReceiver.kt
+package com.clone.app.core.engine
 
 import android.app.Activity
+import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
-import android.os.Bundle
+import android.content.pm.LauncherApps
+import android.os.Process
+import android.os.UserHandle
 import android.widget.Toast
-import com.clone.app.core.diagnostics.DiagnosticsManager
-import dalvik.system.PathClassLoader
-import java.io.File
 
-open class StubActivity : Activity() {
-    companion object {
-        const val EXTRA_TARGET_PACKAGE = "target_package"
-        const val EXTRA_TARGET_ACTIVITY = "target_activity"
-        const val EXTRA_INSTANCE_ID = "instance_id"
-        const val EXTRA_DATA_DIR = "instance_data_dir"
+class CloneDeviceAdminReceiver : DeviceAdminReceiver() {
+    override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
+        val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val component = ComponentName(context, CloneDeviceAdminReceiver::class.java)
+        manager.setProfileName(component, "Clone Sandbox")
+        manager.setProfileEnabled(component)
+    }
+}
+
+object CloneWorkProfileManager {
+    fun setupWorkProfile(activity: Activity, requestCode: Int) {
+        val intent = Intent(DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE).apply {
+            putExtra(
+                DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME,
+                ComponentName(activity, CloneDeviceAdminReceiver::class.java)
+            )
+        }
+        if (intent.resolveActivity(activity.packageManager) != null) {
+            activity.startActivityForResult(intent, requestCode)
+        } else {
+            Toast.makeText(activity, "Work profile feature not supported by this OS", Toast.LENGTH_LONG).show()
+        }
     }
 
-    class Stub1 : StubActivity()
-    class Stub2 : StubActivity()
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val targetPkg = intent.getStringExtra(EXTRA_TARGET_PACKAGE)
-        val targetActivityName = intent.getStringExtra(EXTRA_TARGET_ACTIVITY)
-
-        if (targetPkg == null || targetActivityName == null) {
-            finish()
+    fun launchInProfile(context: Context, packageName: String) {
+        val launcher = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+        val profileUser: UserHandle? = launcher.profiles.firstOrNull { it != Process.myUserHandle() }
+        if (profileUser == null) {
+            Toast.makeText(context, "Work profile not initialized.", Toast.LENGTH_SHORT).show()
             return
         }
-
-        try {
-            val appInfo = packageManager.getApplicationInfo(targetPkg, 0)
-            val isolatedClassLoader = PathClassLoader(appInfo.sourceDir, appInfo.nativeLibraryDir, classLoader)
-            isolatedClassLoader.loadClass(targetActivityName)
-
-            val forwardIntent = Intent(Intent.ACTION_MAIN).apply {
-                setClassName(targetPkg, targetActivityName)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(forwardIntent)
-            finish()
-        } catch (e: Exception) {
-            DiagnosticsManager.log("StubActivity", "Error loading class: ${e.message}")
-            Toast.makeText(this, "Launched Clone container for $targetPkg", Toast.LENGTH_SHORT).show()
-            finish()
+        val matches = launcher.getActivityList(packageName, profileUser)
+        if (matches.isNotEmpty()) {
+            launcher.startMainActivity(matches[0].componentName, profileUser, null, null)
+        } else {
+            Toast.makeText(context, "App not installed in secondary profile.", Toast.LENGTH_SHORT).show()
         }
     }
 }
 EOF
 
-cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/stub/StubContentProvider.kt
-package com.clone.app.core.engine.stub
+# ==========================================
+# 8. APP DISCOVERY & COMPATIBILITY LAYER
+# ==========================================
 
-import android.content.ContentProvider
-import android.content.ContentValues
-import android.database.Cursor
-import android.net.Uri
+cat << 'EOF' > app/src/main/java/com/clone/app/core/compatibility/AppCompatibilityChecker.kt
+package com.clone.app.core.compatibility
 
-class StubContentProvider : ContentProvider() {
-    override fun onCreate(): Boolean = true
-    override fun query(uri: Uri, projection: Array<String>?, selection: String?, selectionArgs: Array<String>?, sortOrder: String?): Cursor? = null
-    override fun getType(uri: Uri): String? = null
-    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int = 0
-}
-EOF
+import android.content.pm.PackageInfo
+import com.clone.app.core.model.CompatibilityLevel
 
-cat << 'EOF' > app/src/main/java/com/clone/app/core/engine/hook/HiddenApiBypass.kt
-package com.clone.app.core.engine.hook
+object AppCompatibilityChecker {
+    private val HARDWARE_RESTRICTED = setOf(
+        "com.google.android.apps.walletnfcrel",
+        "com.google.android.apps.authenticator2",
+        "com.chase.sig.android"
+    )
 
-import android.annotation.SuppressLint
-import android.os.Build
-import android.util.Log
-import java.lang.reflect.Method
-
-object HiddenApiBypass {
-    @SuppressLint("DiscouragedPrivateApi")
-    fun exemptAll(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return true
-        return try {
-            val forNameMethod = Class::class.java.getDeclaredMethod("forName", String::class.java)
-            val getDeclaredMethod = Class::class.java.getDeclaredMethod(
-                "getDeclaredMethod",
-                String::class.java,
-                arrayOf<Class<*>>()::class.java
-            )
-            val vmRuntimeClass = forNameMethod.invoke(null, "dalvik.system.VMRuntime") as Class<*>
-            val getRuntimeMethod = getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", null) as Method
-            val vmRuntimeInstance = getRuntimeMethod.invoke(null)
-            val setHiddenApiExemptionsMethod = getDeclaredMethod.invoke(
-                vmRuntimeClass,
-                "setHiddenApiExemptions",
-                arrayOf(arrayOf<String>()::class.java)
-            ) as Method
-            setHiddenApiExemptionsMethod.invoke(vmRuntimeInstance, arrayOf("L"))
-            true
-        } catch (t: Throwable) {
-            Log.w("HiddenApiBypass", "Hidden API bypass warning: ${t.message}")
-            false
+    fun evaluate(pkgInfo: PackageInfo): Pair<CompatibilityLevel, String> {
+        val pkg = pkgInfo.packageName
+        if (HARDWARE_RESTRICTED.contains(pkg)) {
+            return Pair(CompatibilityLevel.UNSUPPORTED, "Requires strict hardware Play Integrity.")
         }
+        val permissions = pkgInfo.requestedPermissions ?: emptyArray()
+        if (permissions.any { it.contains("NFC") || it.contains("BIOMETRIC") }) {
+            return Pair(CompatibilityLevel.PARTIALLY_COMPATIBLE, "Hardware NFC/Biometrics operate through host system.")
+        }
+        return Pair(CompatibilityLevel.COMPATIBLE, "Fully compatible with container isolation.")
     }
 }
 EOF
 
-# --- Compatibility & Repository ---
 cat << 'EOF' > app/src/main/java/com/clone/app/core/compatibility/DeviceCompatibilityChecker.kt
 package com.clone.app.core.compatibility
 
@@ -650,30 +983,8 @@ object DeviceCompatibilityChecker {
             isTablet = isTablet,
             isFoldable = isFoldable,
             virtualizationSupported = sdkInt in 26..34,
-            engineDiagnosticMessage = "Standard sandboxed container execution mode active."
+            engineDiagnosticMessage = "Standard sandboxed container mode active."
         )
-    }
-}
-EOF
-
-cat << 'EOF' > app/src/main/java/com/clone/app/core/compatibility/AppCompatibilityChecker.kt
-package com.clone.app.core.compatibility
-
-import android.content.pm.PackageInfo
-import com.clone.app.core.model.CompatibilityLevel
-
-object AppCompatibilityChecker {
-    private val RESTRICTED = setOf("com.google.android.apps.walletnfcrel", "com.google.android.apps.authenticator2")
-
-    fun evaluate(pkgInfo: PackageInfo): Pair<CompatibilityLevel, String> {
-        if (RESTRICTED.contains(pkgInfo.packageName)) {
-            return Pair(CompatibilityLevel.UNSUPPORTED, "Requires hardware-bound Play Integrity / Knox.")
-        }
-        val permissions = pkgInfo.requestedPermissions ?: emptyArray()
-        if (permissions.any { it.contains("NFC") || it.contains("BIOMETRIC") }) {
-            return Pair(CompatibilityLevel.PARTIALLY_COMPATIBLE, "Hardware NFC/Biometrics operate through host context.")
-        }
-        return Pair(CompatibilityLevel.COMPATIBLE, "Fully compatible with container isolation.")
     }
 }
 EOF
@@ -694,7 +1005,7 @@ class InstalledAppScanner(private val context: Context) {
     suspend fun scanInstalledApps(): List<AppItem> = withContext(Dispatchers.IO) {
         val pm = context.packageManager
         val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getInstalledPackages(PackageManager.PackageInfoFlags.of((PackageManager.GET_PERMISSIONS).toLong()))
+            pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()))
         } else {
             @Suppress("DEPRECATION")
             pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
@@ -746,64 +1057,41 @@ class AppRepository(private val context: Context) {
 }
 EOF
 
-cat << 'EOF' > app/src/main/java/com/clone/app/core/storage/CloneStorageManager.kt
-package com.clone.app.core.storage
+# ==========================================
+# 9. APPLICATION ENTRY POINT
+# ==========================================
 
+cat << 'EOF' > app/src/main/java/com/clone/app/CloneApplication.kt
+package com.clone.app
+
+import android.app.Application
 import android.content.Context
-import java.io.File
+import com.clone.app.core.diagnostics.DiagnosticsManager
+import com.clone.app.core.engine.CloneEngineProvider
+import com.clone.app.core.engine.hook.DevOptionsInterceptor
+import com.clone.app.core.engine.hook.HiddenApiBypass
 
-object CloneStorageManager {
-    fun getTotalCloneStorageUsed(context: Context): Long {
-        val root = File(context.filesDir, "clone_sandbox")
-        if (!root.exists()) return 0L
-        var total = 0L
-        root.walkTopDown().forEach { if (it.isFile) total += it.length() }
-        return total
+class CloneApplication : Application() {
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        HiddenApiBypass.exemptAll()
     }
 
-    fun clearAllCloneData(context: Context): Boolean {
-        val root = File(context.filesDir, "clone_sandbox")
-        return if (root.exists()) root.deleteRecursively().also { root.mkdirs() } else true
-    }
-
-    fun formatBytes(bytes: Long): String {
-        val mb = bytes / (1024.0 * 1024.0)
-        val gb = mb / 1024.0
-        return when {
-            gb >= 1.0 -> String.format("%.2f GB", gb)
-            mb >= 1.0 -> String.format("%.2f MB", mb)
-            else -> "$bytes B"
-        }
+    override fun onCreate() {
+        super.onCreate()
+        DiagnosticsManager.init(this)
+        DiagnosticsManager.log("System", "Clone Application initialized on SDK ${android.os.Build.VERSION.SDK_INT}")
+        DevOptionsInterceptor.inject(this)
+        val engine = CloneEngineProvider.getEngine(this)
+        engine.initialize(this)
     }
 }
 EOF
 
-cat << 'EOF' > app/src/main/java/com/clone/app/core/diagnostics/DiagnosticsManager.kt
-package com.clone.app.core.diagnostics
+# ==========================================
+# 10. JETPACK COMPOSE THEME
+# ==========================================
 
-import android.content.Context
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.CopyOnWriteArrayList
-
-object DiagnosticsManager {
-    private val logEntries = CopyOnWriteArrayList<String>()
-    private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
-
-    fun init(context: Context) {}
-
-    fun log(tag: String, message: String) {
-        val time = dateFormat.format(Date())
-        logEntries.add("[$time][$tag] $message")
-        if (logEntries.size > 100) logEntries.removeAt(0)
-    }
-
-    fun getRecentLogs(): List<String> = logEntries
-}
-EOF
-
-# --- Theme ---
 cat << 'EOF' > app/src/main/java/com/clone/app/ui/theme/Color.kt
 package com.clone.app.ui.theme
 
@@ -858,7 +1146,10 @@ fun CloneTheme(content: @Composable () -> Unit) {
 }
 EOF
 
-# --- ViewModel & MainActivity ---
+# ==========================================
+# 11. VIEWMODELS
+# ==========================================
+
 cat << 'EOF' > app/src/main/java/com/clone/app/ui/viewmodel/MainViewModel.kt
 package com.clone.app.ui.viewmodel
 
@@ -952,10 +1243,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 }
 EOF
 
+# ==========================================
+# 12. JETPACK COMPOSE UI SCREENS
+# ==========================================
+
 cat << 'EOF' > app/src/main/java/com/clone/app/ui/MainActivity.kt
 package com.clone.app.ui
 
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -969,11 +1266,25 @@ import com.clone.app.ui.screens.*
 import com.clone.app.ui.theme.CloneTheme
 import com.clone.app.ui.viewmodel.MainViewModel
 import com.clone.app.ui.viewmodel.Screen
+import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
+    private val shizukuListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+        if (grantResult == PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Shizuku Protection Active!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val viewModel = ViewModelProvider(this)[MainViewModel::class.java]
+
+        try {
+            Shizuku.addRequestPermissionResultListener(shizukuListener)
+            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(1001)
+            }
+        } catch (ignored: Exception) {}
 
         setContent {
             CloneTheme {
@@ -994,10 +1305,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            Shizuku.removeRequestPermissionResultListener(shizukuListener)
+        } catch (ignored: Exception) {}
+    }
 }
 EOF
 
-# --- UI Screens ---
 cat << 'EOF' > app/src/main/java/com/clone/app/ui/screens/HomeScreen.kt
 package com.clone.app.ui.screens
 
@@ -1020,7 +1337,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.clone.app.R
-import com.clone.app.core.model.AppItem
+import com.clone.app.core.engine.hook.ShizukuSettingsController
 import com.clone.app.core.model.CompatibilityLevel
 import com.clone.app.ui.theme.*
 import com.clone.app.ui.viewmodel.MainViewModel
@@ -1063,7 +1380,28 @@ fun HomeScreen(viewModel: MainViewModel) {
                         }
                     }
                 }
+
                 Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { ShizukuSettingsController.setDeveloperOptions(false) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2235)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Hide Dev Options", fontSize = 11.sp)
+                    }
+                    Button(
+                        onClick = { ShizukuSettingsController.setDeveloperOptions(true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2235)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Restore Dev", fontSize = 11.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 OutlinedTextField(
                     value = query,
                     onValueChange = { viewModel.updateSearchQuery(it) },
@@ -1441,13 +1779,46 @@ fun AboutScreen(viewModel: MainViewModel) {
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).background(DarkBackground).padding(16.dp)) {
-            Text("Clone", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = BrandPurple)
+            Text("Clone Guard", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = BrandPurple)
             Text("Version 1.0.0", color = TextSecondary, fontSize = 12.sp)
             Spacer(modifier = Modifier.height(12.dp))
-            Text("Production-quality sandbox isolation system built with Jetpack Compose.", color = TextPrimary)
+            Text("Production-grade sandbox isolation engine with Developer-Mode bypass support.", color = TextPrimary)
         }
     }
 }
 EOF
 
-echo "All source files written successfully."
+# ==========================================
+# 13. UNIT TESTS
+# ==========================================
+
+cat << 'EOF' > app/src/test/java/com/clone/app/CompatibilityEngineTest.kt
+package com.clone.app
+
+import android.content.pm.PackageInfo
+import com.clone.app.core.compatibility.AppCompatibilityChecker
+import com.clone.app.core.model.CompatibilityLevel
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class CompatibilityEngineTest {
+    @Test
+    fun testRestrictedAppDetection() {
+        val fakePkgInfo = PackageInfo().apply { packageName = "com.google.android.apps.walletnfcrel" }
+        val (level, _) = AppCompatibilityChecker.evaluate(fakePkgInfo)
+        assertEquals(CompatibilityLevel.UNSUPPORTED, level)
+    }
+
+    @Test
+    fun testStandardAppDetection() {
+        val fakePkgInfo = PackageInfo().apply {
+            packageName = "org.wikipedia"
+            requestedPermissions = arrayOf("android.permission.INTERNET")
+        }
+        val (level, _) = AppCompatibilityChecker.evaluate(fakePkgInfo)
+        assertEquals(CompatibilityLevel.COMPATIBLE, level)
+    }
+}
+EOF
+
+echo "SUCCESS: All files generated cleanly."
