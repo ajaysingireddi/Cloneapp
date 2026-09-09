@@ -202,7 +202,6 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
             </intent-filter>
         </activity>
 
-        <!-- Stub Activity Multi-Process Pool -->
         <activity
             android:name=".core.engine.stub.StubActivity"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale"
@@ -241,7 +240,6 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Device Admin Receiver -->
         <receiver
             android:name=".core.engine.CloneDeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
@@ -255,7 +253,6 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
             </intent-filter>
         </receiver>
 
-        <!-- Shizuku Content Provider -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -570,7 +567,7 @@ package com.clone.app.core.engine.hook
 
 import android.content.pm.PackageManager
 import rikka.shizuku.Shizuku
-import rikka.shizuku.ShizukuRemoteProcess
+import java.lang.reflect.Method
 
 object ShizukuSettingsController {
 
@@ -591,8 +588,20 @@ object ShizukuSettingsController {
 
     private fun execute(cmd: String) {
         try {
-            val proc: ShizukuRemoteProcess = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
-            proc.waitFor()
+            val method: Method = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+            val process = method.invoke(
+                null,
+                arrayOf("sh", "-c", cmd),
+                null,
+                null
+            ) as Process
+            process.waitFor()
         } catch (e: Exception) {
             e.printStackTrace()
         }
