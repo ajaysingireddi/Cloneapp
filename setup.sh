@@ -203,19 +203,20 @@ cat << 'EOF' > app/src/main/res/drawable/ic_cloner_logo.xml
 </vector>
 EOF
 
-# ----------------- 1. DEX Bytecode Patcher -----------------
+# ----------------- 1. DEX Bytecode Patcher (Fixed Type Resolution) -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/DexDeveloperModePatcher.kt
 package com.clone.app.patcher
 
 import org.jf.dexlib2.Opcode
 import org.jf.dexlib2.dexbacked.DexBackedDexFile
+import org.jf.dexlib2.iface.ClassDef
+import org.jf.dexlib2.iface.Method
 import org.jf.dexlib2.iface.instruction.ReferenceInstruction
 import org.jf.dexlib2.iface.reference.MethodReference
+import org.jf.dexlib2.immutable.ImmutableClassDef
 import org.jf.dexlib2.immutable.ImmutableMethod
+import org.jf.dexlib2.immutable.ImmutableMethodImplementation
 import org.jf.dexlib2.immutable.instruction.ImmutableInstruction11n
-import org.jf.dexlib2.rewriter.DexRewriter
-import org.jf.dexlib2.rewriter.Rewriter
-import org.jf.dexlib2.rewriter.RewriterModule
 import org.jf.dexlib2.writer.pool.DexPool
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -224,42 +225,74 @@ object DexDeveloperModePatcher {
 
     fun patchDexBytes(dexBytes: ByteArray): ByteArray {
         val dexFile = DexBackedDexFile.fromInputStream(null, ByteArrayInputStream(dexBytes))
+        val modifiedClasses = mutableListOf<ClassDef>()
 
-        val rewriter = DexRewriter(object : RewriterModule() {
-            override fun getMethodRewriter(rewriters: Rewriters): Rewriter<org.jf.dexlib2.iface.Method> {
-                return Rewriter { method ->
-                    val implementation = method.implementation ?: return@Rewriter method
+        for (classDef in dexFile.classes) {
+            val directMethods = classDef.directMethods.map { patchMethod(it) }
+            val virtualMethods = classDef.virtualMethods.map { patchMethod(it) }
 
-                    val updatedInstructions = implementation.instructions.map { instruction ->
-                        if (instruction.opcode == Opcode.INVOKE_STATIC) {
-                            val ref = (instruction as? ReferenceInstruction)?.reference as? MethodReference
-                            if (ref != null && isSecurityCheck(ref)) {
-                                return@map ImmutableInstruction11n(Opcode.CONST_4, 0, 0)
-                            }
-                        }
-                        instruction
-                    }
+            modifiedClasses.add(
+                ImmutableClassDef(
+                    classDef.type,
+                    classDef.accessFlags,
+                    classDef.superclass,
+                    classDef.interfaces,
+                    classDef.sourceFile,
+                    classDef.annotations,
+                    classDef.fields,
+                    directMethods,
+                    virtualMethods
+                )
+            )
+        }
 
-                    ImmutableMethod(
-                        method.definingClass,
-                        method.name,
-                        method.parameters,
-                        method.returnType,
-                        method.accessFlags,
-                        method.annotations,
-                        method.hiddenApiRestrictions,
-                        implementation
-                    )
-                }
-            }
-        })
+        val dexPool = DexPool(dexFile.opcodes)
+        for (clazz in modifiedClasses) {
+            dexPool.internClass(clazz)
+        }
 
-        val rewritten = rewriter.dexFileRewriter.rewrite(dexFile)
         val temp = File.createTempFile("dex_out", ".dex")
-        DexPool.writeTo(temp.absolutePath, rewritten)
+        dexPool.writeTo(temp.absolutePath)
         val result = temp.readBytes()
         temp.delete()
         return result
+    }
+
+    private fun patchMethod(method: Method): Method {
+        val implementation = method.implementation ?: return method
+
+        var modified = false
+        val newInstructions = implementation.instructions.map { instruction ->
+            if (instruction.opcode == Opcode.INVOKE_STATIC) {
+                val ref = (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                if (ref != null && isSecurityCheck(ref)) {
+                    modified = true
+                    // Replace method call with const/4 v0, 0x0
+                    return@map ImmutableInstruction11n(Opcode.CONST_4, 0, 0)
+                }
+            }
+            instruction
+        }
+
+        if (!modified) return method
+
+        val newImpl = ImmutableMethodImplementation(
+            implementation.registerCount,
+            newInstructions,
+            implementation.tryBlocks,
+            implementation.debugItems
+        )
+
+        return ImmutableMethod(
+            method.definingClass,
+            method.name,
+            method.parameters,
+            method.returnType,
+            method.accessFlags,
+            method.annotations,
+            method.hiddenApiRestrictions,
+            newImpl
+        )
     }
 
     private fun isSecurityCheck(ref: MethodReference): Boolean {
@@ -568,53 +601,4 @@ fun ClonerScreen(onCloneApp: (AppTarget, (String) -> Unit) -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Clone Studio", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Text("Direct Bytecode APK Patcher", fontSize = 12.sp, color = Color(0xFF00B894))
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E252B)), modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("Engine Status", fontSize = 12.sp, color = Color.Gray)
-                Text(statusText, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Color.White)
-                if (isProcessing) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF00B894))
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(apps) { app ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                        .clickable(enabled = !isProcessing) {
-                            isProcessing = true
-                            onCloneApp(app) { progress ->
-                                statusText = progress
-                                if (progress == "Failed" || progress.contains("ready")) {
-                                    isProcessing = false
-                                }
-                            }
-                        },
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1F24))
-                ) {
-                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(app.name, fontWeight = FontWeight.Bold, color = Color.White)
-                            Text(app.packageName, fontSize = 11.sp, color = Color.Gray)
-                        }
-                        Text("Patch & Clone", color = Color(0xFF00B894), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
-}
-EOF
-
-echo "All patcher source files generated successfully."
+        Text("Clone Stu
