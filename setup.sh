@@ -491,11 +491,27 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -541,14 +557,15 @@ class MainActivity : ComponentActivity() {
                 )
                 installPatchedApk(outputApk)
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Patching failed: " + e.message, Toast.LENGTH_LONG).show()
+                val msg = e.message ?: "Unknown error"
+                Toast.makeText(this@MainActivity, "Patching failed: " + msg, Toast.LENGTH_LONG).show()
                 updateProgress("Failed")
             }
         }
     }
 
     private fun installPatchedApk(apkFile: File) {
-        val authority = packageName + ".fileprovider"
+        val authority = this.packageName + ".fileprovider"
         val uri: Uri = FileProvider.getUriForFile(this, authority, apkFile)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
@@ -588,4 +605,52 @@ fun ClonerScreen(onCloneApp: (AppTarget, (String) -> Unit) -> Unit) {
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Clone Studio", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
-    
+        Text("Direct Bytecode APK Patcher", fontSize = 12.sp, color = Color(0xFF00B894))
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E252B)), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Engine Status", fontSize = 12.sp, color = Color.Gray)
+                Text(statusText, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                if (isProcessing) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF00B894))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(apps) { app ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable(enabled = !isProcessing) {
+                            isProcessing = true
+                            onCloneApp(app) { progress ->
+                                statusText = progress
+                                if (progress == "Failed" || progress.contains("ready")) {
+                                    isProcessing = false
+                                }
+                            }
+                        },
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1F24))
+                ) {
+                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(app.name, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text(app.packageName, fontSize = 11.sp, color = Color.Gray)
+                        }
+                        Text("Patch & Clone", color = Color(0xFF00B894), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+EOF
+
+echo "All patcher source files generated successfully."
