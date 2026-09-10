@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Generating complete Android Studio project for Clone Studio..."
+echo "Generating complete Android Studio project for Clone Studio with AXML & Split Merger..."
 
 # ----------------- Directory Structure -----------------
 mkdir -p .github/workflows
@@ -117,10 +117,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Bytecode processing on Android (Smali/Dex manipulation)
-    implementation("org.smali:dexlib2:2.5.2")
-
-    // Android APK Signer library (v1/v2/v3 signatures)
+    // Android APK Signer library (v1/v2 signatures)
     implementation("com.android.tools.build:apksig:8.4.1")
 
     // Fast ZIP reading/writing
@@ -210,134 +207,308 @@ cat << 'EOF' > app/src/main/res/drawable/ic_cloner_logo.xml
 </vector>
 EOF
 
-# ----------------- 1. DEX Bytecode Patcher -----------------
-cat << 'EOF' > app/src/main/java/com/clone/app/patcher/DexDeveloperModePatcher.kt
+# ----------------- 1. High-Speed DEX Patcher -----------------
+cat << 'EOF' > app/src/main/java/com/clone/app/patcher/FastDexPatcher.kt
 package com.clone.app.patcher
 
-import org.jf.dexlib2.Opcode
-import org.jf.dexlib2.dexbacked.DexBackedDexFile
-import org.jf.dexlib2.iface.Method
-import org.jf.dexlib2.iface.instruction.ReferenceInstruction
-import org.jf.dexlib2.iface.reference.MethodReference
-import org.jf.dexlib2.immutable.ImmutableMethod
-import org.jf.dexlib2.immutable.ImmutableMethodImplementation
-import org.jf.dexlib2.immutable.instruction.ImmutableInstruction11n
-import org.jf.dexlib2.rewriter.DexRewriter
-import org.jf.dexlib2.rewriter.Rewriter
-import org.jf.dexlib2.rewriter.RewriterModule
-import org.jf.dexlib2.writer.io.FileDataStore
-import org.jf.dexlib2.writer.pool.DexPool
-import java.io.ByteArrayInputStream
-import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
+import java.util.zip.Adler32
 
-object DexDeveloperModePatcher {
+object FastDexPatcher {
+
+    private val TARGET_KEYS = listOf(
+        "development_settings_enabled",
+        "adb_enabled"
+    )
 
     fun patchDexBytes(dexBytes: ByteArray): ByteArray {
-        val dexFile = DexBackedDexFile.fromInputStream(null, ByteArrayInputStream(dexBytes))
+        if (dexBytes.size < 0x70) return dexBytes
+        if (dexBytes[0] != 0x64.toByte() || dexBytes[1] != 0x65.toByte() || dexBytes[2] != 0x78.toByte()) {
+            return dexBytes
+        }
 
-        val rewriter = DexRewriter(object : RewriterModule() {
-            override fun getMethodRewriter(rewriters: org.jf.dexlib2.rewriter.Rewriters): Rewriter<Method> {
-                return Rewriter { method ->
-                    val implementation = method.implementation ?: return@Rewriter method
+        var modified = false
+        for (target in TARGET_KEYS) {
+            val targetBytes = target.toByteArray(Charsets.UTF_8)
+            val replacement = ("disabled_" + target.take(target.length - 9)).toByteArray(Charsets.UTF_8)
 
-                    var modified = false
-                    val newInstructions = implementation.instructions.map { instruction ->
-                        if (instruction.opcode == Opcode.INVOKE_STATIC) {
-                            val ref = (instruction as? ReferenceInstruction)?.reference as? MethodReference
-                            if (ref != null && isSecurityCheck(ref)) {
-                                modified = true
-                                return@map ImmutableInstruction11n(Opcode.CONST_4, 0, 0)
-                            }
+            var i = 0x70
+            val limit = dexBytes.size - targetBytes.size
+            while (i <= limit) {
+                if (dexBytes[i] == targetBytes[0]) {
+                    var match = true
+                    for (j in 1 until targetBytes.size) {
+                        if (dexBytes[i + j] != targetBytes[j]) {
+                            match = false
+                            break
                         }
-                        instruction
                     }
-
-                    if (!modified) {
-                        return@Rewriter method
+                    if (match) {
+                        System.arraycopy(replacement, 0, dexBytes, i, targetBytes.size)
+                        modified = true
+                        i += targetBytes.size
+                        continue
                     }
-
-                    val newImpl = ImmutableMethodImplementation(
-                        implementation.registerCount,
-                        newInstructions,
-                        implementation.tryBlocks,
-                        implementation.debugItems
-                    )
-
-                    ImmutableMethod(
-                        method.definingClass,
-                        method.name,
-                        method.parameters,
-                        method.returnType,
-                        method.accessFlags,
-                        method.annotations,
-                        method.hiddenApiRestrictions,
-                        newImpl
-                    )
                 }
+                i++
             }
-        })
+        }
 
-        val rewrittenDex = rewriter.dexFileRewriter.rewrite(dexFile)
-        val temp = File.createTempFile("dex_out", ".dex")
-        DexPool.writeTo(FileDataStore(temp), rewrittenDex)
-        val result = temp.readBytes()
-        temp.delete()
-        return result
+        if (modified) {
+            recalculateChecksums(dexBytes)
+        }
+        return dexBytes
     }
 
-    private fun isSecurityCheck(ref: MethodReference): Boolean {
-        val cls = ref.definingClass
-        val name = ref.name
-        return (cls == "Landroid/provider/Settings\$Global;" || cls == "Landroid/provider/Settings\$Secure;") &&
-                (name == "getInt" || name == "getString")
+    private fun recalculateChecksums(dex: ByteArray) {
+        val md = MessageDigest.getInstance("SHA-1")
+        md.update(dex, 32, dex.size - 32)
+        val sha1 = md.digest()
+        System.arraycopy(sha1, 0, dex, 12, 20)
+
+        val adler = Adler32()
+        adler.update(dex, 12, dex.size - 12)
+        val checksum = adler.value.toInt()
+
+        val buf = ByteBuffer.wrap(dex, 8, 4).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(checksum)
     }
 }
 EOF
 
-# ----------------- 2. Binary Manifest Rewriter -----------------
+# ----------------- 2. Binary AXML String Pool & Component Patcher -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/ManifestPackagePatcher.kt
 package com.clone.app.patcher
 
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
 object ManifestPackagePatcher {
 
+    private const val CHUNK_STRING_POOL = 0x001C0001
+
     fun rewriteManifest(
         manifestBytes: ByteArray,
         oldPackage: String,
-        newPackage: String
+        newPackage: String,
+        originalAppLabel: String
     ): ByteArray {
-        val oldBytes = oldPackage.toByteArray(StandardCharsets.UTF_8)
-        val newBytes = newPackage.toByteArray(StandardCharsets.UTF_8)
+        val buf = ByteBuffer.wrap(manifestBytes).order(ByteOrder.LITTLE_ENDIAN)
+        if (buf.remaining() < 8) return manifestBytes
 
-        val targetOld = if (newBytes.size < oldBytes.size) {
-            newBytes.copyOf(oldBytes.size)
-        } else {
-            newBytes
+        val magic = buf.short.toInt() and 0xFFFF
+        val headerSize = buf.short.toInt() and 0xFFFF
+        val totalSize = buf.int
+
+        if (magic != 0x0003) {
+            return manifestBytes
         }
 
-        val out = ByteArray(manifestBytes.size)
-        System.arraycopy(manifestBytes, 0, out, 0, manifestBytes.size)
+        var offset = headerSize
+        var stringPoolOffset = -1
+        while (offset + 8 <= manifestBytes.size) {
+            val chunkType = ByteBuffer.wrap(manifestBytes, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val chunkSize = ByteBuffer.wrap(manifestBytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
 
-        var index = 0
-        while (index <= out.size - oldBytes.size) {
-            var match = true
-            for (i in oldBytes.indices) {
-                if (out[index + i] != oldBytes[i]) {
-                    match = false
-                    break
-                }
+            if (chunkType == CHUNK_STRING_POOL) {
+                stringPoolOffset = offset
+                break
             }
-            if (match) {
-                for (i in oldBytes.indices) {
-                    out[index + i] = targetOld[i]
-                }
-                index += oldBytes.size
+            if (chunkSize <= 0) break
+            offset += chunkSize
+        }
+
+        if (stringPoolOffset == -1) {
+            return manifestBytes
+        }
+
+        return rewriteStringPool(manifestBytes, stringPoolOffset, oldPackage, newPackage, originalAppLabel)
+    }
+
+    private fun rewriteStringPool(
+        data: ByteArray,
+        spOffset: Int,
+        oldPackage: String,
+        newPackage: String,
+        originalAppLabel: String
+    ): ByteArray {
+        val buf = ByteBuffer.wrap(data, spOffset, data.size - spOffset).order(ByteOrder.LITTLE_ENDIAN)
+        val chunkType = buf.int
+        val chunkSize = buf.int
+        val stringCount = buf.int
+        val styleCount = buf.int
+        val flags = buf.int
+        val stringsStart = buf.int
+        val stylesStart = buf.int
+
+        val isUtf8 = (flags and (1 shl 8)) != 0
+
+        val stringOffsets = IntArray(stringCount)
+        for (i in 0 until stringCount) {
+            stringOffsets[i] = buf.int
+        }
+
+        val stringsAbsStart = spOffset + stringsStart
+        val originalStrings = mutableListOf<String>()
+
+        for (i in 0 until stringCount) {
+            val strOffset = stringsAbsStart + stringOffsets[i]
+            val s = if (isUtf8) {
+                readUtf8String(data, strOffset)
             } else {
-                index++
+                readUtf16String(data, strOffset)
+            }
+            originalStrings.add(s)
+        }
+
+        val modifiedStrings = originalStrings.map { str ->
+            when {
+                str == oldPackage -> newPackage
+                str == originalAppLabel -> "$originalAppLabel Clone"
+                str.startsWith("$oldPackage.") -> str.replace(oldPackage, newPackage)
+                str.startsWith(".") -> "$oldPackage$str" // Qualify shorthand activities (.MainActivity -> oldPackage.MainActivity)
+                else -> str
             }
         }
-        return out
+
+        val newStringData = ByteArrayOutputStream()
+        val newOffsets = IntArray(stringCount)
+
+        for (i in 0 until stringCount) {
+            newOffsets[i] = newStringData.size()
+            val s = modifiedStrings[i]
+            if (isUtf8) {
+                writeUtf8String(newStringData, s)
+            } else {
+                writeUtf16String(newStringData, s)
+            }
+        }
+
+        while (newStringData.size() % 4 != 0) {
+            newStringData.write(0)
+        }
+
+        val newStringsBytes = newStringData.toByteArray()
+        val stylesSize = if (styleCount > 0 && stylesStart > 0) {
+            chunkSize - stylesStart
+        } else {
+            0
+        }
+
+        val newHeaderSize = 28 + (stringCount * 4) + (styleCount * 4)
+        val newStringsStart = newHeaderSize
+        val newStylesStart = if (styleCount > 0) newStringsStart + newStringsBytes.size else 0
+        val newChunkSize = newHeaderSize + newStringsBytes.size + stylesSize
+
+        val newPoolHeader = ByteBuffer.allocate(newHeaderSize).order(ByteOrder.LITTLE_ENDIAN)
+        newPoolHeader.putInt(chunkType)
+        newPoolHeader.putInt(newChunkSize)
+        newPoolHeader.putInt(stringCount)
+        newPoolHeader.putInt(styleCount)
+        newPoolHeader.putInt(flags)
+        newPoolHeader.putInt(newStringsStart)
+        newPoolHeader.putInt(newStylesStart)
+
+        for (off in newOffsets) {
+            newPoolHeader.putInt(off)
+        }
+
+        val beforePool = data.copyOfRange(0, spOffset)
+        val stylesData = if (stylesSize > 0) {
+            data.copyOfRange(spOffset + stylesStart, spOffset + stylesStart + stylesSize)
+        } else {
+            ByteArray(0)
+        }
+        val afterPool = data.copyOfRange(spOffset + chunkSize, data.size)
+
+        val resultStream = ByteArrayOutputStream()
+        resultStream.write(beforePool)
+        resultStream.write(newPoolHeader.array())
+        resultStream.write(newStringsBytes)
+        if (stylesSize > 0) {
+            resultStream.write(stylesData)
+        }
+        resultStream.write(afterPool)
+
+        val finalBytes = resultStream.toByteArray()
+        val finalBuf = ByteBuffer.wrap(finalBytes).order(ByteOrder.LITTLE_ENDIAN)
+        finalBuf.putInt(4, finalBytes.size)
+
+        return finalBytes
+    }
+
+    private fun readUtf8String(data: ByteArray, offset: Int): String {
+        var pos = offset
+        var charLen = data[pos++].toInt() and 0xFF
+        if ((charLen and 0x80) != 0) {
+            charLen = ((charLen and 0x7F) shl 8) or (data[pos++].toInt() and 0xFF)
+        }
+
+        var byteLen = data[pos++].toInt() and 0xFF
+        if ((byteLen and 0x80) != 0) {
+            byteLen = ((byteLen and 0x7F) shl 8) or (data[pos++].toInt() and 0xFF)
+        }
+
+        return String(data, pos, byteLen, StandardCharsets.UTF_8)
+    }
+
+    private fun readUtf16String(data: ByteArray, offset: Int): String {
+        var pos = offset
+        var len = (data[pos].toInt() and 0xFF) or ((data[pos + 1].toInt() and 0xFF) shl 8)
+        pos += 2
+        if ((len and 0x8000) != 0) {
+            val high = len and 0x7FFF
+            val low = (data[pos].toInt() and 0xFF) or ((data[pos + 1].toInt() and 0xFF) shl 8)
+            len = (high shl 16) or low
+            pos += 2
+        }
+        return String(data, pos, len * 2, StandardCharsets.UTF_16LE)
+    }
+
+    private fun writeUtf8String(out: ByteArrayOutputStream, str: String) {
+        val bytes = str.toByteArray(StandardCharsets.UTF_8)
+        val charLen = str.length
+        val byteLen = bytes.size
+
+        if (charLen > 127) {
+            out.write((charLen shr 8) or 0x80)
+            out.write(charLen and 0xFF)
+        } else {
+            out.write(charLen)
+        }
+
+        if (byteLen > 127) {
+            out.write((byteLen shr 8) or 0x80)
+            out.write(byteLen and 0xFF)
+        } else {
+            out.write(byteLen)
+        }
+
+        out.write(bytes)
+        out.write(0)
+    }
+
+    private fun writeUtf16String(out: ByteArrayOutputStream, str: String) {
+        val len = str.length
+        if (len > 0x7FFF) {
+            val high = (len shr 16) or 0x8000
+            val low = len and 0xFFFF
+            out.write(high and 0xFF)
+            out.write((high shr 8) and 0xFF)
+            out.write(low and 0xFF)
+            out.write((low shr 8) and 0xFF)
+        } else {
+            out.write(len and 0xFF)
+            out.write((len shr 8) and 0xFF)
+        }
+        val bytes = str.toByteArray(StandardCharsets.UTF_16LE)
+        out.write(bytes)
+        out.write(0)
+        out.write(0)
     }
 }
 EOF
@@ -406,13 +577,14 @@ object ApkSignerEngine {
 }
 EOF
 
-# ----------------- 4. Pipeline Orchestrator -----------------
+# ----------------- 4. Pipeline Orchestrator with Split-APK Merging -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/ApkClonerPipeline.kt
 package com.clone.app.patcher
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
@@ -425,10 +597,12 @@ object ApkClonerPipeline {
         context: Context,
         sourceApkPath: String,
         targetPackageName: String,
+        appLabel: String,
+        splitApkPaths: List<String>?,
         onProgress: (String) -> Unit
     ): File = withContext(Dispatchers.IO) {
 
-        onProgress("1/5 Extracting target APK...")
+        withContext(Dispatchers.Main) { onProgress("1/5 Inspecting APK package...") }
         val sourceApk = File(sourceApkPath)
         val unsignedApk = File(context.cacheDir, "temp_unsigned.apk")
         val signedApk = File(context.cacheDir, targetPackageName + "_cloned.apk")
@@ -436,47 +610,85 @@ object ApkClonerPipeline {
         if (unsignedApk.exists()) unsignedApk.delete()
         if (signedApk.exists()) signedApk.delete()
 
-        onProgress("2/5 Patching DEX & bytecode security checks...")
         val zipIn = ZipFile(sourceApk)
-        val zipOut = ZipOutputStream(FileOutputStream(unsignedApk))
+        val zipOut = ZipOutputStream(BufferedOutputStream(FileOutputStream(unsignedApk), 65536))
+        val buffer = ByteArray(65536)
+        val writtenEntries = HashSet<String>()
 
         val entries = zipIn.entries()
         while (entries.hasMoreElements()) {
             val entry = entries.nextElement()
 
-            if (entry.name.startsWith("META-INF/") && (entry.name.endsWith(".SF") || entry.name.endsWith(".RSA") || entry.name.endsWith(".MF"))) {
+            if (entry.name.startsWith("META-INF/") && (entry.name.endsWith(".SF") || entry.name.endsWith(".RSA") || entry.name.endsWith(".MF") || entry.name.endsWith(".DSA"))) {
                 continue
             }
 
+            writtenEntries.add(entry.name)
             val newEntry = ZipEntry(entry.name)
             zipOut.putNextEntry(newEntry)
 
-            val rawBytes = zipIn.getInputStream(entry).readBytes()
-
             if (entry.name.endsWith(".dex")) {
-                val patchedDex = DexDeveloperModePatcher.patchDexBytes(rawBytes)
+                withContext(Dispatchers.Main) { onProgress("2/5 Neutralizing Developer Mode checks in " + entry.name) }
+                val rawBytes = zipIn.getInputStream(entry).use { it.readBytes() }
+                val patchedDex = FastDexPatcher.patchDexBytes(rawBytes)
                 zipOut.write(patchedDex)
             } else if (entry.name == "AndroidManifest.xml") {
+                withContext(Dispatchers.Main) { onProgress("2/5 Normalizing package name & home screen icon...") }
+                val rawBytes = zipIn.getInputStream(entry).use { it.readBytes() }
                 val patchedManifest = ManifestPackagePatcher.rewriteManifest(
                     rawBytes,
                     targetPackageName,
-                    targetPackageName + ".cloned"
+                    targetPackageName + ".cloned",
+                    appLabel
                 )
                 zipOut.write(patchedManifest)
             } else {
-                zipOut.write(rawBytes)
+                zipIn.getInputStream(entry).use { streamIn ->
+                    var read: Int
+                    while (streamIn.read(buffer).also { read = it } != -1) {
+                        zipOut.write(buffer, 0, read)
+                    }
+                }
             }
             zipOut.closeEntry()
         }
-
         zipIn.close()
+
+        // Merge native shared libraries from Split APKs (split_config.arm64_v8a.apk)
+        if (!splitApkPaths.isNullOrEmpty()) {
+            withContext(Dispatchers.Main) { onProgress("2/5 Merging split native architecture libraries...") }
+            for (splitPath in splitApkPaths) {
+                val splitFile = File(splitPath)
+                if (!splitFile.exists()) continue
+
+                val splitZip = ZipFile(splitFile)
+                val splitEntries = splitZip.entries()
+                while (splitEntries.hasMoreElements()) {
+                    val se = splitEntries.nextElement()
+                    if (se.name.startsWith("lib/") && se.name.endsWith(".so") && !writtenEntries.contains(se.name)) {
+                        writtenEntries.add(se.name)
+                        zipOut.putNextEntry(ZipEntry(se.name))
+                        splitZip.getInputStream(se).use { sIn ->
+                            var read: Int
+                            while (sIn.read(buffer).also { read = it } != -1) {
+                                zipOut.write(buffer, 0, read)
+                            }
+                        }
+                        zipOut.closeEntry()
+                    }
+                }
+                splitZip.close()
+            }
+        }
+
+        zipOut.flush()
         zipOut.close()
 
-        onProgress("3/5 Re-signing APK with V1/V2 signatures...")
+        withContext(Dispatchers.Main) { onProgress("3/5 Re-signing APK with V1/V2 signatures...") }
         ApkSignerEngine.signApk(unsignedApk, signedApk)
         unsignedApk.delete()
 
-        onProgress("4/5 Cloned APK ready.")
+        withContext(Dispatchers.Main) { onProgress("4/5 Done. Launching Android installer...") }
         return@withContext signedApk
     }
 }
@@ -531,7 +743,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-data class AppTarget(val name: String, val packageName: String, val apkPath: String)
+data class AppTarget(
+    val name: String,
+    val packageName: String,
+    val apkPath: String,
+    val splitApkPaths: List<String>?
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -558,13 +775,15 @@ class MainActivity : ComponentActivity() {
                     this@MainActivity,
                     appTarget.apkPath,
                     appTarget.packageName,
+                    appTarget.name,
+                    appTarget.splitApkPaths,
                     updateProgress
                 )
                 installPatchedApk(outputApk)
             } catch (e: Exception) {
                 val msg = e.message ?: "Unknown error"
                 Toast.makeText(this@MainActivity, "Patching failed: " + msg, Toast.LENGTH_LONG).show()
-                updateProgress("Failed")
+                updateProgress("Failed: " + msg)
             }
         }
     }
@@ -599,10 +818,12 @@ fun ClonerScreen(onCloneApp: (AppTarget, (String) -> Unit) -> Unit) {
             }
             installed.filter { (it.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) == 0 }
                 .map {
+                    val splits = it.applicationInfo.splitSourceDirs?.toList()
                     AppTarget(
                         name = pm.getApplicationLabel(it.applicationInfo).toString(),
                         packageName = it.packageName,
-                        apkPath = it.applicationInfo.sourceDir
+                        apkPath = it.applicationInfo.sourceDir,
+                        splitApkPaths = splits
                     )
                 }.sortedBy { it.name.lowercase() }
         }
@@ -637,7 +858,7 @@ fun ClonerScreen(onCloneApp: (AppTarget, (String) -> Unit) -> Unit) {
                             isProcessing = true
                             onCloneApp(app) { progress ->
                                 statusText = progress
-                                if (progress == "Failed" || progress.contains("ready")) {
+                                if (progress.startsWith("Failed") || progress.contains("Done")) {
                                     isProcessing = false
                                 }
                             }
