@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Generating complete Android Studio project for Clone Studio with AXML & Split Merger..."
+echo "Generating fully compatible Clone Studio APK Patcher..."
 
 # ----------------- Directory Structure -----------------
 mkdir -p .github/workflows
@@ -278,7 +278,7 @@ object FastDexPatcher {
 }
 EOF
 
-# ----------------- 2. Binary AXML String Pool & Component Patcher -----------------
+# ----------------- 2. Binary AXML Parser & String Pool Rebuilder -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/ManifestPackagePatcher.kt
 package com.clone.app.patcher
 
@@ -289,52 +289,51 @@ import java.nio.charset.StandardCharsets
 
 object ManifestPackagePatcher {
 
+    private const val CHUNK_AXML = 0x00080003
     private const val CHUNK_STRING_POOL = 0x001C0001
 
     fun rewriteManifest(
         manifestBytes: ByteArray,
         oldPackage: String,
         newPackage: String,
-        originalAppLabel: String
+        appLabel: String
     ): ByteArray {
         val buf = ByteBuffer.wrap(manifestBytes).order(ByteOrder.LITTLE_ENDIAN)
         if (buf.remaining() < 8) return manifestBytes
 
-        val magic = buf.short.toInt() and 0xFFFF
-        val headerSize = buf.short.toInt() and 0xFFFF
+        val chunkType = buf.int
         val totalSize = buf.int
-
-        if (magic != 0x0003) {
+        if (chunkType != CHUNK_AXML) {
             return manifestBytes
         }
 
-        var offset = headerSize
+        var offset = 8
         var stringPoolOffset = -1
         while (offset + 8 <= manifestBytes.size) {
-            val chunkType = ByteBuffer.wrap(manifestBytes, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            val chunkSize = ByteBuffer.wrap(manifestBytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val type = ByteBuffer.wrap(manifestBytes, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val size = ByteBuffer.wrap(manifestBytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
 
-            if (chunkType == CHUNK_STRING_POOL) {
+            if (type == CHUNK_STRING_POOL) {
                 stringPoolOffset = offset
                 break
             }
-            if (chunkSize <= 0) break
-            offset += chunkSize
+            if (size <= 0) break
+            offset += size
         }
 
         if (stringPoolOffset == -1) {
             return manifestBytes
         }
 
-        return rewriteStringPool(manifestBytes, stringPoolOffset, oldPackage, newPackage, originalAppLabel)
+        return rewriteStringPoolChunk(manifestBytes, stringPoolOffset, oldPackage, newPackage, appLabel)
     }
 
-    private fun rewriteStringPool(
+    private fun rewriteStringPoolChunk(
         data: ByteArray,
         spOffset: Int,
         oldPackage: String,
         newPackage: String,
-        originalAppLabel: String
+        appLabel: String
     ): ByteArray {
         val buf = ByteBuffer.wrap(data, spOffset, data.size - spOffset).order(ByteOrder.LITTLE_ENDIAN)
         val chunkType = buf.int
@@ -358,19 +357,25 @@ object ManifestPackagePatcher {
         for (i in 0 until stringCount) {
             val strOffset = stringsAbsStart + stringOffsets[i]
             val s = if (isUtf8) {
-                readUtf8String(data, strOffset)
+                readUtf8(data, strOffset)
             } else {
-                readUtf16String(data, strOffset)
+                readUtf16(data, strOffset)
             }
             originalStrings.add(s)
         }
 
+        // Rewrite strings while avoiding length distortions that invalidate resource tables
         val modifiedStrings = originalStrings.map { str ->
             when {
                 str == oldPackage -> newPackage
-                str == originalAppLabel -> "$originalAppLabel Clone"
+                str == appLabel -> "$appLabel Clone"
+                // Rename content provider authorities to bypass INSTALL_FAILED_CONFLICTING_PROVIDER
+                str.contains(".provider") || str.contains(".fileprovider") || str.contains("authorities") -> {
+                    if (str.startsWith(oldPackage)) str.replace(oldPackage, newPackage) else "$str.clone"
+                }
+                // Qualify shorthand class names (.MainActivity -> oldPackage.MainActivity)
+                str.startsWith(".") -> "$oldPackage$str"
                 str.startsWith("$oldPackage.") -> str.replace(oldPackage, newPackage)
-                str.startsWith(".") -> "$oldPackage$str" // Qualify shorthand activities (.MainActivity -> oldPackage.MainActivity)
                 else -> str
             }
         }
@@ -382,12 +387,13 @@ object ManifestPackagePatcher {
             newOffsets[i] = newStringData.size()
             val s = modifiedStrings[i]
             if (isUtf8) {
-                writeUtf8String(newStringData, s)
+                writeUtf8(newStringData, s)
             } else {
-                writeUtf16String(newStringData, s)
+                writeUtf16(newStringData, s)
             }
         }
 
+        // Align string block to 4 bytes
         while (newStringData.size() % 4 != 0) {
             newStringData.write(0)
         }
@@ -436,27 +442,26 @@ object ManifestPackagePatcher {
 
         val finalBytes = resultStream.toByteArray()
         val finalBuf = ByteBuffer.wrap(finalBytes).order(ByteOrder.LITTLE_ENDIAN)
+        // Update total AXML file size at offset 4
         finalBuf.putInt(4, finalBytes.size)
 
         return finalBytes
     }
 
-    private fun readUtf8String(data: ByteArray, offset: Int): String {
+    private fun readUtf8(data: ByteArray, offset: Int): String {
         var pos = offset
         var charLen = data[pos++].toInt() and 0xFF
         if ((charLen and 0x80) != 0) {
             charLen = ((charLen and 0x7F) shl 8) or (data[pos++].toInt() and 0xFF)
         }
-
         var byteLen = data[pos++].toInt() and 0xFF
         if ((byteLen and 0x80) != 0) {
             byteLen = ((byteLen and 0x7F) shl 8) or (data[pos++].toInt() and 0xFF)
         }
-
         return String(data, pos, byteLen, StandardCharsets.UTF_8)
     }
 
-    private fun readUtf16String(data: ByteArray, offset: Int): String {
+    private fun readUtf16(data: ByteArray, offset: Int): String {
         var pos = offset
         var len = (data[pos].toInt() and 0xFF) or ((data[pos + 1].toInt() and 0xFF) shl 8)
         pos += 2
@@ -469,7 +474,7 @@ object ManifestPackagePatcher {
         return String(data, pos, len * 2, StandardCharsets.UTF_16LE)
     }
 
-    private fun writeUtf8String(out: ByteArrayOutputStream, str: String) {
+    private fun writeUtf8(out: ByteArrayOutputStream, str: String) {
         val bytes = str.toByteArray(StandardCharsets.UTF_8)
         val charLen = str.length
         val byteLen = bytes.size
@@ -492,7 +497,7 @@ object ManifestPackagePatcher {
         out.write(0)
     }
 
-    private fun writeUtf16String(out: ByteArrayOutputStream, str: String) {
+    private fun writeUtf16(out: ByteArrayOutputStream, str: String) {
         val len = str.length
         if (len > 0x7FFF) {
             val high = (len shr 16) or 0x8000
@@ -577,7 +582,7 @@ object ApkSignerEngine {
 }
 EOF
 
-# ----------------- 4. Pipeline Orchestrator with Split-APK Merging -----------------
+# ----------------- 4. Pipeline Orchestrator with Alignment & Split Merging -----------------
 cat << 'EOF' > app/src/main/java/com/clone/app/patcher/ApkClonerPipeline.kt
 package com.clone.app.patcher
 
@@ -619,6 +624,7 @@ object ApkClonerPipeline {
         while (entries.hasMoreElements()) {
             val entry = entries.nextElement()
 
+            // Remove previous signature artifacts
             if (entry.name.startsWith("META-INF/") && (entry.name.endsWith(".SF") || entry.name.endsWith(".RSA") || entry.name.endsWith(".MF") || entry.name.endsWith(".DSA"))) {
                 continue
             }
@@ -628,12 +634,12 @@ object ApkClonerPipeline {
             zipOut.putNextEntry(newEntry)
 
             if (entry.name.endsWith(".dex")) {
-                withContext(Dispatchers.Main) { onProgress("2/5 Neutralizing Developer Mode checks in " + entry.name) }
+                withContext(Dispatchers.Main) { onProgress("2/5 Neutralizing checks in " + entry.name) }
                 val rawBytes = zipIn.getInputStream(entry).use { it.readBytes() }
                 val patchedDex = FastDexPatcher.patchDexBytes(rawBytes)
                 zipOut.write(patchedDex)
             } else if (entry.name == "AndroidManifest.xml") {
-                withContext(Dispatchers.Main) { onProgress("2/5 Normalizing package name & home screen icon...") }
+                withContext(Dispatchers.Main) { onProgress("2/5 Rebuilding Manifest & Component Authorities...") }
                 val rawBytes = zipIn.getInputStream(entry).use { it.readBytes() }
                 val patchedManifest = ManifestPackagePatcher.rewriteManifest(
                     rawBytes,
@@ -654,9 +660,9 @@ object ApkClonerPipeline {
         }
         zipIn.close()
 
-        // Merge native shared libraries from Split APKs (split_config.arm64_v8a.apk)
+        // Consolidate Split APK libraries (architecture-dependent .so files)
         if (!splitApkPaths.isNullOrEmpty()) {
-            withContext(Dispatchers.Main) { onProgress("2/5 Merging split native architecture libraries...") }
+            withContext(Dispatchers.Main) { onProgress("2/5 Consolidating Split APK architecture libraries...") }
             for (splitPath in splitApkPaths) {
                 val splitFile = File(splitPath)
                 if (!splitFile.exists()) continue
